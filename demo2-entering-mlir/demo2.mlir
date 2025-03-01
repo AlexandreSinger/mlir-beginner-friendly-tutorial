@@ -36,7 +36,9 @@ module {
 // containing ops which it will "execute" in order. The symantic of "executing"
 // these ops in order comes from the abstraction of the FuncOp itself, not from
 // MLIR's specifications.
-func.func @main() {
+// Here, we have a function named "main", it takes no arguments, and returns a
+// tensor (which will be described later why).
+func.func @main() -> tensor<256x1024xf32> {
     // This is the first occurence of a "Value" in this tutorial. Values are
     // what may get returned from operations. In MLIR, these are named using the
     // "%" symbol. Values in MLIR are Static-Single-Assignment (SSA). This means
@@ -69,10 +71,11 @@ func.func @main() {
     // dialect. Most ops in the linalg dialect need to know what is in the output
     // tensor before the operation occured. Some operations, for example, may
     // not set every value in the tensor and the user may want to zero initialize
-    // the output tensor. In this case, we do not care what values are in the
-    // output matrix before performing the matmul (since all values should be
-    // written anyways) so we make this an empty tensor.
-    %matmul_init = tensor.empty() : tensor<256x1024xf32>
+    // the output tensor. In this case, we must set the initial value of the
+    // output tensor to all 0s since matrix multiplies use multiply-accumulate
+    // instructions which accumulate into the output buffer.
+    %c_init = arith.constant 0.0 : f32
+    %matmul_init = tensor.splat %c_init : tensor<256x1024xf32>
     %FC_OUTPUT = linalg.matmul
                     ins(%FC_INPUT, %FC_WEIGHT : tensor<256x512xf32>, tensor<512x1024xf32>)
                     outs(%matmul_init : tensor<256x1024xf32>) -> tensor<256x1024xf32>
@@ -91,6 +94,9 @@ func.func @main() {
     // dependencies between iterations). Next, we specify the function of this
     // operation. In this case, I used the "arithmetic" dialect to describe a
     // compare and select that will set the input value to zero if it is negative.
+    // Since all values for this relu are being written into, and the %out is
+    // not being used, we can allocate the init tensor without setting it to some
+    // number.
     %relu_init = tensor.empty() : tensor<256x1024xf32>
     %OUT = linalg.generic { indexing_maps = [#map, #map],
                             iterator_types = ["parallel", "parallel"]}
@@ -103,8 +109,12 @@ func.func @main() {
                     linalg.yield %sel : f32
                } -> tensor<256x1024xf32>
 
-    // signal that the function is finished.
-    func.return
+    // Return the final tensor result. This differs from the original main
+    // function since MLIR is often smart enough to realize that this tensor is
+    // never used and will optimize everything in this kernel away. To keep that
+    // from happening for this tutorial, I just returned the result.
+    func.return %OUT : tensor<256x1024xf32>
 }
 
 }
+

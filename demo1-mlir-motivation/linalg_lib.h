@@ -51,6 +51,7 @@ Tensor<T, M, N> matmul(Tensor<T, M, K>& A, Tensor<T, K, N>& B) {
     Tensor<T, M, N> C;
     for (size_t i = 0; i < M; i++) {
         for (size_t j = 0; j < N; j++) {
+            C.get(i, j) = 0.f;
             for (size_t k = 0; k < K; k++) {
                 C.get(i, j) += A.get(i, k) * B.get(k, j);
             }

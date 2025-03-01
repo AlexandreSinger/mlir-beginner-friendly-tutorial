@@ -20,7 +20,8 @@ $LLVM_BIN_DIR/mlir-opt \
 # around allocated pointers to memory with shape information.
 $LLVM_BIN_DIR/mlir-opt \
     $SCRIPT_DIR/demo3-0-linalg-on-tensor.mlir \
-    -one-shot-bufferize \
+    -one-shot-bufferize="bufferize-function-boundaries=true" \
+    -canonicalize \
     -o $SCRIPT_DIR/demo3-1-linalg-on-memref.mlir
 
 # Convert the linalg operations into loops in the SCF dialect. We are assuming
