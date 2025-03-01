@@ -367,3 +367,260 @@ have valid LLVMIR code which can be compiled further using LLVM all the way to
 executable assembly. I will not show this in this tutorial since it is out of
 scope.
 
+# Demo 4: Optimizing MLIR with Affine Analysis
+
+MLIR can do much more than just lower high-level code to CPUs and other targets.
+What makes MLIR so powerful is its ability to do high-level analysis and
+optimization as it is lowering. One analysis that is built-into MLIR's core
+dialects is Affine Analysis.
+
+In a nutshell, Affine Analysis uses analytical models to represent how code
+accesses buffers. By using these analytical models, we can deduce the memory
+access patterns of buffers which allow us to do exciting optimization like
+fusing complicated loops together and tiling loops to improve cache locality.
+
+Affine Analysis is provided as part of the affine dialect in MLIR. This is a
+level of abstraction that exists below the linalg dialect, but above the loops
+dialect. What we can do is as we are lowering from the Linalg dialect to the scf
+dialect, we can make a pit-stop into the affine dialect, perform optimizations,
+and the continue into the scf dialect.
+
+The script `optimize.sh` walks through how to enter into the affine dialect from
+our Demo 2 code, perform loop fusion and tiling, and then lower into the scf
+dialect.
+
+We can convert the linalg dialect into the affine dialect using the
+`convert-linalg-to-affine-loops` pass after performing bufferization. This
+produces the following code:
+```mlir
+module {
+  func.func @main() -> memref<256x1024xf32> {
+    %cst = arith.constant 0.000000e+00 : f32
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    affine.for %arg0 = 0 to 256 {
+      affine.for %arg1 = 0 to 1024 {
+        affine.store %cst, %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+      }
+    }
+    affine.for %arg0 = 0 to 256 {
+      affine.for %arg1 = 0 to 1024 {
+        affine.for %arg2 = 0 to 512 {
+          %0 = affine.load %alloc[%arg0, %arg2] : memref<256x512xf32>
+          %1 = affine.load %alloc_0[%arg2, %arg1] : memref<512x1024xf32>
+          %2 = affine.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+          %3 = arith.mulf %0, %1 : f32
+          %4 = arith.addf %2, %3 : f32
+          affine.store %4, %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+        }
+      }
+    }
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    affine.for %arg0 = 0 to 256 {
+      affine.for %arg1 = 0 to 1024 {
+        %0 = affine.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+        %1 = arith.cmpf ugt, %0, %cst : f32
+        %2 = arith.select %1, %0, %cst : f32
+        affine.store %2, %alloc_2[%arg0, %arg1] : memref<256x1024xf32>
+      }
+    }
+    return %alloc_2 : memref<256x1024xf32>
+  }
+}
+```
+You will notice that the affine dialect looks very similar to the scf on memref
+level of abstraction; however, this dialect comes with gaurentees on how memrefs
+are accessed within the kernel, which makes performing Affine Analysis much
+easier. Now that we are in the affine dialect, we can make use of the optimizations
+provided by the dialect.
+
+The first optimizations I want to perform is loop fusion. You will notice that
+the original kernel separates out the zeroing of output buffer, computing the
+matmul, and performing the ReLU into different loop nests. We know that the
+memory accesses between these loops are independent, but without Affine Analysis
+the compiler struggles to realize this. Here, we use the `affine-loop-fusion`
+pass which produces the following code:
+```mlir
+module {
+  func.func @main() -> memref<256x1024xf32> {
+    %alloc = memref.alloc() : memref<1x1xf32>
+    %cst = arith.constant 0.000000e+00 : f32
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    affine.for %arg0 = 0 to 256 {
+      affine.for %arg1 = 0 to 1024 {
+        affine.store %cst, %alloc[0, 0] : memref<1x1xf32>
+        affine.for %arg2 = 0 to 512 {
+          %3 = affine.load %alloc_0[%arg0, %arg2] : memref<256x512xf32>
+          %4 = affine.load %alloc_1[%arg2, %arg1] : memref<512x1024xf32>
+          %5 = affine.load %alloc[0, 0] : memref<1x1xf32>
+          %6 = arith.mulf %3, %4 : f32
+          %7 = arith.addf %5, %6 : f32
+          affine.store %7, %alloc[0, 0] : memref<1x1xf32>
+        }
+        %0 = affine.load %alloc[0, 0] : memref<1x1xf32>
+        %1 = arith.cmpf ugt, %0, %cst : f32
+        %2 = arith.select %1, %0, %cst : f32
+        affine.store %2, %alloc_2[%arg0, %arg1] : memref<256x1024xf32>
+      }
+    }
+    return %alloc_2 : memref<256x1024xf32>
+  }
+}
+```
+Notice that the compiler was able to recognize that the three loop nests could
+be fused and combined them all into 1! This has a massive affect on the performance
+of the kernel. Not only do we not have to iterate over 256x1024 elements three
+times, but notice that one of the buffers dissapeared! The ReLU function needed
+to allocate a 1MB buffer to store the result of the activation; however, using
+affine analysis, the compiler realized that this buffer was not necessary and
+removed it. This greatly reduces the memory footprint of the kernel which will
+help with cache locality.
+
+Speaking of cache locality, we can further improve our cache hit rate by performing
+tiling. As mentioned in Demo 1, tiling is a target-specific optimization which
+requires knowledge on the size of the caches and the size of the memory accessed
+within the loop nests. Fortunitely, we can use Affine Analysis to deduce the size
+of the memory footprint within the loop nests and we can tell the affine dialect
+how large our cache is! For my computer, the cache size is around 1024 kB, so I
+can perform loop tiling using `affine-loop-tile="cache-size=1024"`. I also
+perform some other cleanup passes to make the code more legible below:
+```mlir
+module {
+  func.func @main() -> memref<256x1024xf32> {
+    %cst = arith.constant 0.000000e+00 : f32
+    %alloc = memref.alloc() : memref<1x1xf32>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    affine.for %arg0 = 0 to 128 {
+      affine.for %arg1 = 0 to 512 {
+        affine.for %arg2 = 0 to 2 {
+          affine.for %arg3 = 0 to 2 {
+            affine.store %cst, %alloc[0, 0] : memref<1x1xf32>
+            affine.for %arg4 = 0 to 512 {
+              %3 = affine.load %alloc_0[%arg2 + %arg0 * 2, %arg4] : memref<256x512xf32>
+              %4 = affine.load %alloc_1[%arg4, %arg3 + %arg1 * 2] : memref<512x1024xf32>
+              %5 = affine.load %alloc[0, 0] : memref<1x1xf32>
+              %6 = arith.mulf %3, %4 : f32
+              %7 = arith.addf %5, %6 : f32
+              affine.store %7, %alloc[0, 0] : memref<1x1xf32>
+            }
+            %0 = affine.load %alloc[0, 0] : memref<1x1xf32>
+            %1 = arith.cmpf ugt, %0, %cst : f32
+            %2 = arith.select %1, %0, %cst : f32
+            affine.store %2, %alloc_2[%arg2 + %arg0 * 2, %arg3 + %arg1 * 2] : memref<256x1024xf32>
+          }
+        }
+      }
+    }
+    return %alloc_2 : memref<256x1024xf32>
+  }
+}
+```
+Using Affine Analysis, the compiler decided to tile the two outermost loops by
+2x2. This partitions the inner calculations into tiles of size 2x2 which the
+compiler believes will maximize cache locality.
+
+Now that we have performed the optimizations we care about in the Affine dialect,
+we can continue the lowering process to the scf dialect using the `lower-affine`
+pass. This produces the output below:
+```mlir
+module {
+  func.func @main() -> memref<256x1024xf32> {
+    %c2 = arith.constant 2 : index
+    %c512 = arith.constant 512 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %alloc = memref.alloc() : memref<1x1xf32>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    scf.for %arg0 = %c0 to %c128 step %c1 {
+      scf.for %arg1 = %c0 to %c512 step %c1 {
+        scf.for %arg2 = %c0 to %c2 step %c1 {
+          scf.for %arg3 = %c0 to %c2 step %c1 {
+            memref.store %cst, %alloc[%c0, %c0] : memref<1x1xf32>
+            scf.for %arg4 = %c0 to %c512 step %c1 {
+              %7 = arith.muli %arg0, %c2 overflow<nsw> : index
+              %8 = arith.addi %arg2, %7 : index
+              %9 = memref.load %alloc_0[%8, %arg4] : memref<256x512xf32>
+              %10 = arith.muli %arg1, %c2 overflow<nsw> : index
+              %11 = arith.addi %arg3, %10 : index
+              %12 = memref.load %alloc_1[%arg4, %11] : memref<512x1024xf32>
+              %13 = memref.load %alloc[%c0, %c0] : memref<1x1xf32>
+              %14 = arith.mulf %9, %12 : f32
+              %15 = arith.addf %13, %14 : f32
+              memref.store %15, %alloc[%c0, %c0] : memref<1x1xf32>
+            }
+            %0 = memref.load %alloc[%c0, %c0] : memref<1x1xf32>
+            %1 = arith.cmpf ugt, %0, %cst : f32
+            %2 = arith.select %1, %0, %cst : f32
+            %3 = arith.muli %arg0, %c2 overflow<nsw> : index
+            %4 = arith.addi %arg2, %3 : index
+            %5 = arith.muli %arg1, %c2 overflow<nsw> : index
+            %6 = arith.addi %arg3, %5 : index
+            memref.store %2, %alloc_2[%4, %6] : memref<256x1024xf32>
+          }
+        }
+      }
+    }
+    return %alloc_2 : memref<256x1024xf32>
+  }
+}
+```
+
+Let's compare the output above to the kernel in the scf dialect without performing
+Affine Analysis:
+```mlir
+module {
+  func.func @main() -> memref<256x1024xf32> {
+    %c512 = arith.constant 512 : index
+    %c1024 = arith.constant 1024 : index
+    %c1 = arith.constant 1 : index
+    %c256 = arith.constant 256 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    scf.for %arg0 = %c0 to %c256 step %c1 {
+      scf.for %arg1 = %c0 to %c1024 step %c1 {
+        memref.store %cst, %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+      }
+    }
+    scf.for %arg0 = %c0 to %c256 step %c1 {
+      scf.for %arg1 = %c0 to %c1024 step %c1 {
+        scf.for %arg2 = %c0 to %c512 step %c1 {
+          %0 = memref.load %alloc[%arg0, %arg2] : memref<256x512xf32>
+          %1 = memref.load %alloc_0[%arg2, %arg1] : memref<512x1024xf32>
+          %2 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+          %3 = arith.mulf %0, %1 : f32
+          %4 = arith.addf %2, %3 : f32
+          memref.store %4, %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+        }
+      }
+    }
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    scf.for %arg0 = %c0 to %c256 step %c1 {
+      scf.for %arg1 = %c0 to %c1024 step %c1 {
+        %0 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+        %1 = arith.cmpf ugt, %0, %cst : f32
+        %2 = arith.select %1, %0, %cst : f32
+        memref.store %2, %alloc_2[%arg0, %arg1] : memref<256x1024xf32>
+      }
+    }
+    return %alloc_2 : memref<256x1024xf32>
+  }
+}
+```
+Notice that the kernel is much more concise, makes fewer allocations, and has
+better cache locality. All of this we got for free by using analysis provided
+by us being at a higher level of abstraction.
+
+This kernel in the scf dialect can then be lowered in the same way as Demo 3.
+
