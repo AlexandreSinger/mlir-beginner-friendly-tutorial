@@ -153,3 +153,182 @@ parsing. This renames many of the values and remove any comments which are not
 necessary for compilation. You can print this result to a file using the `-o`
 option.
 
+# Demo 3: Lowering MLIR
+
+Since MLIR code exists at different levels of abstraction, we need to be able to
+lower from a higher level of abstraction to a lower one in order to compile to
+a given target. This demo will ignore optimizing at the different levels and only
+show how to lower the MLIR code from Demo 2 to LLVMIR for compiling onto a CPU.
+Our goal is to take the high-level code we wrote in Demo 2, and lower it to
+the level of abstraction closest to assembly language.
+
+The script `lower.sh` lowers the code from Demo 2 step-by-step from the high-level
+linalg representation all the way to LLVMIR. You can run this script by doing:
+```sh
+bash demo3-lowering-mlir/lower.sh
+```
+We will now walk through what each step in this script is doing.
+
+The MLIR code from Demo 2 is at a level of abstraction called "Linalg on Tensor",
+which is shown in the following code:
+```mlir
+#map = affine_map<(d0, d1) -> (d0, d1)>                                                                                                                                                                     
+module {                                                                                                                                                                                                    
+  func.func @main() {                                                                                                                                                                                       
+    %0 = tensor.empty() : tensor<256x512xf32>                                                                                                                                                               
+    %1 = tensor.empty() : tensor<512x1024xf32>                                                                                                                                                              
+    %2 = tensor.empty() : tensor<256x1024xf32>                                                                                                                                                              
+    %3 = linalg.matmul ins(%0, %1 : tensor<256x512xf32>, tensor<512x1024xf32>) outs(%2 : tensor<256x1024xf32>) -> tensor<256x1024xf32>                                                                      
+    %4 = tensor.empty() : tensor<256x1024xf32>                                                                                                                                                              
+    %5 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%3 : tensor<256x1024xf32>) outs(%4 : tensor<256x1024xf32>) {                                          
+    ^bb0(%in: f32, %out: f32):                                                                                                                                                                              
+      %cst = arith.constant 0.000000e+00 : f32                                                                                                                                                              
+      %6 = arith.cmpf ugt, %in, %cst : f32                                                                                                                                                                  
+      %7 = arith.select %6, %in, %cst : f32                                                                                                                                                                 
+      linalg.yield %7 : f32                                                                                                                                                                                 
+    } -> tensor<256x1024xf32>                                                                                                                                                                               
+    return                                                                                                                                                                                                  
+  }                                                                                                                                                                                                         
+}
+```
+You will notice that at this abstraction level there is no concept of what
+device this code is running on. Tensors, by design, do not contain any information
+on how the data is stored in memory, and the linalg operations have practically
+no information on how the linear algebra operations will be performed. It is
+just a high-level description of an algorithm.
+
+The first thing we need to do is lower the Tensors into MemRefs. Tensors are
+abstract data types which only represent the data being created / used. We need
+this data to exist somewhere in memory in buffers. MLIR provides specialized
+passes to convert tensors into buffers for each of the dialects. A list of all
+these passes can be found [here](https://mlir.llvm.org/docs/Passes/#bufferization-passes).
+In this case, we want to use the `one-shot-bufferize` pass. This performs all
+the bufferization over all the dialects at once in "one-shot". If you do not need
+fine-grained control over how the buffers are created, this is a good pass to use.
+We will be using `mlir-opt` to run this pass. See the `lower.sh` script for how
+to use it. After performing bufferization, the code is lowered to a new level
+of abstraction called "Linalg on MemRef":
+```mlir
+#map = affine_map<(d0, d1) -> (d0, d1)>                                                                                                                                                                     
+module {                                                                                                                                                                                                    
+  func.func @main() {                                                                                                                                                                                       
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>                                                                                                                                    
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>                                                                                                                                 
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
+    linalg.matmul ins(%alloc, %alloc_0 : memref<256x512xf32>, memref<512x1024xf32>) outs(%alloc_1 : memref<256x1024xf32>)                                                                                   
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
+    linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%alloc_1 : memref<256x1024xf32>) outs(%alloc_2 : memref<256x1024xf32>) {                                   
+    ^bb0(%in: f32, %out: f32):                                                                                                                                                                              
+      %cst = arith.constant 0.000000e+00 : f32                                                                                                                                                              
+      %0 = arith.cmpf ugt, %in, %cst : f32                                                                                                                                                                  
+      %1 = arith.select %0, %in, %cst : f32                                                                                                                                                                 
+      linalg.yield %1 : f32                                                                                                                                                                                 
+    }                                                                                                                                                                                                       
+    return                                                                                                                                                                                                  
+  }                                                                                                                                                                                                         
+}
+```
+At this level of abstraction, you will notice that we can no longer just create
+empty tensors anymore; now, we have to actually allocate the memory onto the
+device. What changed here is that now all data buffers have real pointers
+underneath that have been allocated within the kernel. This is the first time
+we have seen MemRefs in this tutorial. These are incredibly imporant Types found
+in core MLIR. MemRefs represent memory buffers. They are wrappers around pointers.
+MemRefs truly are just pointers with shape / type information attached to them.
+They "break" SSA by allowing users to write to locations within the MemRef without
+having to create a new Value. I should be clear that the MemRef values themselves
+are still SSA (for example `%alloc` is still an SSA value), but because we are
+working with pointers, it is challenging to perform data-flow analysis on the
+data contained within MemRefs. This demonstrates how moving from one level of
+abstraction to another leads to necessary losses in information.
+
+Now that the Tensors have been lowered into buffers, and the linalg operations
+are working on these buffers, we can now lower these linalg ops to real algorithms.
+CPUs do not come with ops to compute the matmul over two buffers (normally), so
+we need to convert these ops into actual for-loops that can be executed. This
+will lower our abstraction level further from what is often called "graph-level"
+linalg operations to actual instructions. This will look similar to what one
+would write in C++. We can convert the linalg dialect to loops using the
+`convert-linalg-to-loops` pass found
+[here](https://mlir.llvm.org/docs/Passes/#-convert-linalg-to-loops).
+This will produce the following code:
+```mlir
+module {                                                                                                                                                                                                    
+  func.func @main() {                                                                                                                                                                                       
+    %c512 = arith.constant 512 : index                                                                                                                                                                      
+    %c1024 = arith.constant 1024 : index                                                                                                                                                                    
+    %c1 = arith.constant 1 : index                                                                                                                                                                          
+    %c256 = arith.constant 256 : index                                                                                                                                                                      
+    %c0 = arith.constant 0 : index                                                                                                                                                                          
+    %cst = arith.constant 0.000000e+00 : f32                                                                                                                                                                
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>                                                                                                                                    
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>                                                                                                                                 
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
+    scf.for %arg0 = %c0 to %c256 step %c1 {                                                                                                                                                                 
+      scf.for %arg1 = %c0 to %c1024 step %c1 {                                                                                                                                                              
+        scf.for %arg2 = %c0 to %c512 step %c1 {                                                                                                                                                             
+          %0 = memref.load %alloc[%arg0, %arg2] : memref<256x512xf32>                                                                                                                                       
+          %1 = memref.load %alloc_0[%arg2, %arg1] : memref<512x1024xf32>                                                                                                                                    
+          %2 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                    
+          %3 = arith.mulf %0, %1 : f32                                                                                                                                                                      
+          %4 = arith.addf %2, %3 : f32                                                                                                                                                                      
+          memref.store %4, %alloc_1[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                    
+        }                                                                                                                                                                                                   
+      }                                                                                                                                                                                                     
+    }                                                                                                                                                                                                       
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
+    scf.for %arg0 = %c0 to %c256 step %c1 {                                                                                                                                                                 
+      scf.for %arg1 = %c0 to %c1024 step %c1 {                                                                                                                                                              
+        %0 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                      
+        %1 = arith.cmpf ugt, %0, %cst : f32                                                                                                                                                                 
+        %2 = arith.select %1, %0, %cst : f32                                                                                                                                                                
+        memref.store %2, %alloc_2[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                      
+      }                                                                                                                                                                                                     
+    }                                                                                                                                                                                                       
+    return                                                                                                                                                                                                  
+  }                                                                                                                                                                                                         
+}
+```
+Notice that the linalg operations have been converted to practically the same
+code we wrote in Demo 1 in C++! Another thing to notice is that we are now
+operating directly on the MemRef buffers, instead of naming high-level operations
+we want to perform. Thus, now we are directly loading from and storing to these
+buffers. Due to all of this, the length of the kernel also increases. This is the
+consequence of lowering the abstraction level. Code gets less abstract and more
+detailed.
+To represent loops in MLIR, we use the Strutured Control Flow dialect which
+creates ops for things like For loops, if statment, while loops, etc.
+This code is at the abstraction level that is closest to C++, but in
+order to compile this code we need to lower more towards assembly.
+
+Assembly language does not have high-level control flow, like for loops. Due to
+this, we have to lower the for loops to something that is compatible with assembly.
+For most CPUs, this is done using branch instructions. General branching ops
+are provided by the control-flow dialect (`cf` dialect). We can convert the scf
+dialect into the cf dialect using the conversion pass `convert-scf-to-cf`. I should
+note that all passes available in core MLIR can be found [here](https://mlir.llvm.org/docs/Passes/).
+I will not show the resulting MLIR code here since it becomes very verbose and
+much harder to read. This is an important point, we are losing more and more
+high-level information as we lower further. This makes it harder to perform
+optimizations. This is a key idea in MLIR: perform optimizations at the level
+of abstraction that is most convenient, never later. After this point, we are
+at the level of abstraction that is as close to CPUs as we can get in core MLIR.
+
+Now that we are at the CPU level of abstraction, we want to make use of LLVM to
+lower the rest of the way. This is very convenient since LLVM has been built over
+several years to convert CPU level code all the way down to assembly. We want to
+make use of this lowering! In order to emit LLVMIR, we need to convert all of
+our MLIR code to the LLVM dialect. This is done by converting each of the dialects we have
+in our kernel into the LLVM dialect. See the `lower.sh` script for which passes I chose to
+use for this particular kernel. After this point the code is as close to LLVMIR
+as we can get in MLIR.
+
+The final tool that we will use is a translation tool called `mlir-translate`
+which will turn the MLIR code in the LLVM dialect into LLVMIR. This is different
+from `mlir-opt` since `mlir-opt` always takes in valid MLIR code and spits out
+valid MLIR code. The goal of `mlir-translate` is to take MLIR code and translate
+it into another target language; in our case, it is LLVMIR. After this step we
+have valid LLVMIR code which can be compiled further using LLVM all the way to
+executable assembly. I will not show this in this tutorial since it is out of
+scope.
+
