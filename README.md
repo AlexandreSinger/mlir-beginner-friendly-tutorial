@@ -5,7 +5,7 @@ MLIR, not a compiler engineer. This tutorial will introduce why MLIR exists and
 how it is used to compile code at different levels of abstraction. This tutorial
 will focus on working with the "core" dialects of MLIR.
 
-# 0: Building MLIR
+# Demo 0: Building MLIR
 
 In this repository, you will find a Git submodule of LLVM. This was the most
 recent version of LLVM that was available when I wrote this tutorial. There is
@@ -105,4 +105,51 @@ abstraction).
 
 There are other motivations for using MLIR, this is just a motivation that I felt
 best encapsulates the "Multi-Level" aspect of MLIR.
+
+# Demo 2: Entering MLIR
+
+Now that we have motivated why we may want to use MLIR, lets convert the high-level
+code from demo 1 into MLIR:
+```cpp
+int main(void) {
+    Tensor<float, 256, 512> FC_INPUT;
+    Tensor<float, 512, 1024> FC_WEIGHT;
+    Tensor<float, 256, 1024> FC_OUTPUT = matmul(FC_INPUT, FC_WEIGHT);
+    Tensor<float, 256, 1024> OUT = relu(FC_OUTPUT);
+}
+```
+
+Often, custom tools are created which can convert code such as the code above
+into MLIR automatically. For this example, such a tool is trivial to write since
+I chose the API for the library to match the Tensor + Linalg level of abstraction
+in MLIR. Often times people do things the other way around, the build a level of
+abstraction in MLIR which matches their pre-existing APIs; however, for this
+tutorial, I wanted to use the core MLIR dialects.
+
+I chose to enter the Tensor + Linalg level of abstraction for this demo since
+this is a common abstraction used by the key users of MLIR (TensorFlow and
+PyTorch). It is also a very interesting level of abstraction.
+
+I converted the code above into MLIR code by hand. This code can be found in
+`demo2.mlir`. For this tutorial it does not matter if the MLIR code was generated
+by a tool or not. In this MLIR file, you will find comments where I describe how
+to read the Intermediate Representation at this level of abstraction.
+
+MLIR provides a tool called `mlir-opt` which is used to test MLIR code. This
+tool runs passes on MLIR code (which will be described in the next demo) and
+verfies that the MLIR code is valid between passes. Since it runs validation so
+often, this tool is often just used for testing / debugging; while custom tools
+based on this one are used when building a real compiler flow. For this part of
+the demo, I want to use this tool to ensure that the MLIR code I wrote by hand
+is valid. After following the steps in Demo 0, you should have `mlir-opt` already
+built in the `build/bin` folder. To use it, we perform the following command:
+```sh
+./build/bin/mlir-opt demo2-entering-mlir/demo2.mlir
+```
+
+`mlir-opt` will print an error if there is a syntax error with what I wrote. In
+this case we get no error. You will notice that this tool will print the IR after
+parsing. This renames many of the values and remove any comments which are not
+necessary for compilation. You can print this result to a file using the `-o`
+option.
 
