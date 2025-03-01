@@ -134,6 +134,30 @@ I converted the code above into MLIR code by hand. This code can be found in
 `demo2.mlir`. For this tutorial it does not matter if the MLIR code was generated
 by a tool or not. In this MLIR file, you will find comments where I describe how
 to read the Intermediate Representation at this level of abstraction.
+```mlir
+#map = affine_map<(i, j) -> (i, j)>
+module {
+func.func @main() {
+    %FC_INPUT = tensor.empty() : tensor<256x512xf32>
+    %FC_WEIGHT = tensor.empty() : tensor<512x1024xf32>
+    %matmul_init = tensor.empty() : tensor<256x1024xf32> 
+    %FC_OUTPUT = linalg.matmul
+                    ins(%FC_INPUT, %FC_WEIGHT : tensor<256x512xf32>, tensor<512x1024xf32>)
+                    outs(%matmul_init : tensor<256x1024xf32>) -> tensor<256x1024xf32>
+    %relu_init = tensor.empty() : tensor<256x1024xf32>
+    %OUT = linalg.generic { indexing_maps = [#map, #map],
+                            iterator_types = ["parallel", "parallel"]}
+               ins(%FC_OUTPUT : tensor<256x1024xf32>)
+               outs(%relu_init : tensor<256x1024xf32>) {
+               ^bb0(%in: f32, %out: f32):
+                    %c0 = arith.constant 0.0 : f32
+                    %cmp = arith.cmpf ugt, %in, %c0 : f32
+                    %sel = arith.select %cmp, %in, %c0 : f32
+                    linalg.yield %sel : f32
+               } -> tensor<256x1024xf32>
+    func.return
+}
+```
 
 MLIR provides a tool called `mlir-opt` which is used to test MLIR code. This
 tool runs passes on MLIR code (which will be described in the next demo) and
@@ -172,23 +196,23 @@ We will now walk through what each step in this script is doing.
 The MLIR code from Demo 2 is at a level of abstraction called "Linalg on Tensor",
 which is shown in the following code:
 ```mlir
-#map = affine_map<(d0, d1) -> (d0, d1)>                                                                                                                                                                     
-module {                                                                                                                                                                                                    
-  func.func @main() {                                                                                                                                                                                       
-    %0 = tensor.empty() : tensor<256x512xf32>                                                                                                                                                               
-    %1 = tensor.empty() : tensor<512x1024xf32>                                                                                                                                                              
-    %2 = tensor.empty() : tensor<256x1024xf32>                                                                                                                                                              
-    %3 = linalg.matmul ins(%0, %1 : tensor<256x512xf32>, tensor<512x1024xf32>) outs(%2 : tensor<256x1024xf32>) -> tensor<256x1024xf32>                                                                      
-    %4 = tensor.empty() : tensor<256x1024xf32>                                                                                                                                                              
-    %5 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%3 : tensor<256x1024xf32>) outs(%4 : tensor<256x1024xf32>) {                                          
-    ^bb0(%in: f32, %out: f32):                                                                                                                                                                              
-      %cst = arith.constant 0.000000e+00 : f32                                                                                                                                                              
-      %6 = arith.cmpf ugt, %in, %cst : f32                                                                                                                                                                  
-      %7 = arith.select %6, %in, %cst : f32                                                                                                                                                                 
-      linalg.yield %7 : f32                                                                                                                                                                                 
-    } -> tensor<256x1024xf32>                                                                                                                                                                               
-    return                                                                                                                                                                                                  
-  }                                                                                                                                                                                                         
+#map = affine_map<(d0, d1) -> (d0, d1)>
+module {
+  func.func @main() {
+    %0 = tensor.empty() : tensor<256x512xf32>
+    %1 = tensor.empty() : tensor<512x1024xf32>
+    %2 = tensor.empty() : tensor<256x1024xf32>
+    %3 = linalg.matmul ins(%0, %1 : tensor<256x512xf32>, tensor<512x1024xf32>) outs(%2 : tensor<256x1024xf32>) -> tensor<256x1024xf32>
+    %4 = tensor.empty() : tensor<256x1024xf32>
+    %5 = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%3 : tensor<256x1024xf32>) outs(%4 : tensor<256x1024xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      %cst = arith.constant 0.000000e+00 : f32
+      %6 = arith.cmpf ugt, %in, %cst : f32
+      %7 = arith.select %6, %in, %cst : f32
+      linalg.yield %7 : f32
+    } -> tensor<256x1024xf32>
+    return
+  }
 }
 ```
 You will notice that at this abstraction level there is no concept of what
@@ -209,23 +233,23 @@ We will be using `mlir-opt` to run this pass. See the `lower.sh` script for how
 to use it. After performing bufferization, the code is lowered to a new level
 of abstraction called "Linalg on MemRef":
 ```mlir
-#map = affine_map<(d0, d1) -> (d0, d1)>                                                                                                                                                                     
-module {                                                                                                                                                                                                    
-  func.func @main() {                                                                                                                                                                                       
-    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>                                                                                                                                    
-    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>                                                                                                                                 
-    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
-    linalg.matmul ins(%alloc, %alloc_0 : memref<256x512xf32>, memref<512x1024xf32>) outs(%alloc_1 : memref<256x1024xf32>)                                                                                   
-    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
-    linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%alloc_1 : memref<256x1024xf32>) outs(%alloc_2 : memref<256x1024xf32>) {                                   
-    ^bb0(%in: f32, %out: f32):                                                                                                                                                                              
-      %cst = arith.constant 0.000000e+00 : f32                                                                                                                                                              
-      %0 = arith.cmpf ugt, %in, %cst : f32                                                                                                                                                                  
-      %1 = arith.select %0, %in, %cst : f32                                                                                                                                                                 
-      linalg.yield %1 : f32                                                                                                                                                                                 
-    }                                                                                                                                                                                                       
-    return                                                                                                                                                                                                  
-  }                                                                                                                                                                                                         
+#map = affine_map<(d0, d1) -> (d0, d1)>
+module {
+  func.func @main() {
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    linalg.matmul ins(%alloc, %alloc_0 : memref<256x512xf32>, memref<512x1024xf32>) outs(%alloc_1 : memref<256x1024xf32>)
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel", "parallel"]} ins(%alloc_1 : memref<256x1024xf32>) outs(%alloc_2 : memref<256x1024xf32>) {
+    ^bb0(%in: f32, %out: f32):
+      %cst = arith.constant 0.000000e+00 : f32
+      %0 = arith.cmpf ugt, %in, %cst : f32
+      %1 = arith.select %0, %in, %cst : f32
+      linalg.yield %1 : f32
+    }
+    return
+  }
 }
 ```
 At this level of abstraction, you will notice that we can no longer just create
@@ -253,40 +277,40 @@ would write in C++. We can convert the linalg dialect to loops using the
 [here](https://mlir.llvm.org/docs/Passes/#-convert-linalg-to-loops).
 This will produce the following code:
 ```mlir
-module {                                                                                                                                                                                                    
-  func.func @main() {                                                                                                                                                                                       
-    %c512 = arith.constant 512 : index                                                                                                                                                                      
-    %c1024 = arith.constant 1024 : index                                                                                                                                                                    
-    %c1 = arith.constant 1 : index                                                                                                                                                                          
-    %c256 = arith.constant 256 : index                                                                                                                                                                      
-    %c0 = arith.constant 0 : index                                                                                                                                                                          
-    %cst = arith.constant 0.000000e+00 : f32                                                                                                                                                                
-    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>                                                                                                                                    
-    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>                                                                                                                                 
-    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
-    scf.for %arg0 = %c0 to %c256 step %c1 {                                                                                                                                                                 
-      scf.for %arg1 = %c0 to %c1024 step %c1 {                                                                                                                                                              
-        scf.for %arg2 = %c0 to %c512 step %c1 {                                                                                                                                                             
-          %0 = memref.load %alloc[%arg0, %arg2] : memref<256x512xf32>                                                                                                                                       
-          %1 = memref.load %alloc_0[%arg2, %arg1] : memref<512x1024xf32>                                                                                                                                    
-          %2 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                    
-          %3 = arith.mulf %0, %1 : f32                                                                                                                                                                      
-          %4 = arith.addf %2, %3 : f32                                                                                                                                                                      
-          memref.store %4, %alloc_1[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                    
-        }                                                                                                                                                                                                   
-      }                                                                                                                                                                                                     
-    }                                                                                                                                                                                                       
-    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>                                                                                                                                 
-    scf.for %arg0 = %c0 to %c256 step %c1 {                                                                                                                                                                 
-      scf.for %arg1 = %c0 to %c1024 step %c1 {                                                                                                                                                              
-        %0 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                      
-        %1 = arith.cmpf ugt, %0, %cst : f32                                                                                                                                                                 
-        %2 = arith.select %1, %0, %cst : f32                                                                                                                                                                
-        memref.store %2, %alloc_2[%arg0, %arg1] : memref<256x1024xf32>                                                                                                                                      
-      }                                                                                                                                                                                                     
-    }                                                                                                                                                                                                       
-    return                                                                                                                                                                                                  
-  }                                                                                                                                                                                                         
+module {
+  func.func @main() {
+    %c512 = arith.constant 512 : index
+    %c1024 = arith.constant 1024 : index
+    %c1 = arith.constant 1 : index
+    %c256 = arith.constant 256 : index
+    %c0 = arith.constant 0 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %alloc = memref.alloc() {alignment = 64 : i64} : memref<256x512xf32>
+    %alloc_0 = memref.alloc() {alignment = 64 : i64} : memref<512x1024xf32>
+    %alloc_1 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    scf.for %arg0 = %c0 to %c256 step %c1 {
+      scf.for %arg1 = %c0 to %c1024 step %c1 {
+        scf.for %arg2 = %c0 to %c512 step %c1 {
+          %0 = memref.load %alloc[%arg0, %arg2] : memref<256x512xf32>
+          %1 = memref.load %alloc_0[%arg2, %arg1] : memref<512x1024xf32>
+          %2 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+          %3 = arith.mulf %0, %1 : f32
+          %4 = arith.addf %2, %3 : f32
+          memref.store %4, %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+        }
+      }
+    }
+    %alloc_2 = memref.alloc() {alignment = 64 : i64} : memref<256x1024xf32>
+    scf.for %arg0 = %c0 to %c256 step %c1 {
+      scf.for %arg1 = %c0 to %c1024 step %c1 {
+        %0 = memref.load %alloc_1[%arg0, %arg1] : memref<256x1024xf32>
+        %1 = arith.cmpf ugt, %0, %cst : f32
+        %2 = arith.select %1, %0, %cst : f32
+        memref.store %2, %alloc_2[%arg0, %arg1] : memref<256x1024xf32>
+      }
+    }
+    return
+  }
 }
 ```
 Notice that the linalg operations have been converted to practically the same
