@@ -25,7 +25,7 @@ This tutorial uses the Ninja generator to build MLIR, this can be installed usin
 apt-get install ninja-build
 ```
 
-Create a build folder and run the following CMake command. After run the final
+Create a build folder and run the following CMake command. After, run the final
 command to build MLIR and check that it built successfully.
 
 ```sh
@@ -45,7 +45,7 @@ of the LLVM and MLIR code necessary to check that MLIR was built correctly for
 your system. I recommend giving it many cores using `-j<num_cores>`.
 
 After this command completes, you should have the executables you need to perform
-this tutorial.
+the rest of this tutorial.
 
 # Demo 1: Motivating MLIR
 
@@ -53,16 +53,16 @@ Demo 1 is a demonstration on what writing high-performance code is like without
 MLIR. It demonstrates a common technique where the user writes their code at a
 high level (just basic linear-algebra operations) and use high-performance
 libraries to make the code run fast. This is the same technique that is used
-for libraries like TensorFlow and PyTorch in Python; this is written in C++ so
+for libraries like TensorFlow and PyTorch in Python. This demo is written in C++ so
 the actual instructions can be shown in more detail, but the same concepts apply
 to Python.
 
 `demo1.cpp` shows the high-level code that a user may write. This code is a
 basic Fully-Connected layer one might find in a Deep Neural Network. To
 implement this layer, one just needs to take the input vector (which is often
-represented as a matrix due to batching) and multiplying it by a weight matrix.
+represented as a matrix due to batching) and multiply it by a weight matrix.
 The output of this is then passed into an activation function (in this case
-ReLu) to get the output of the layer. The user writes this code at a high-level,
+ReLU) to get the output of the layer. The user writes this code at a high-level,
 without concern for performance, which makes the code easier to write and work
 with. It also makes the code more portable to other targets.
 
@@ -74,12 +74,12 @@ this and is not optimized at all. The key idea of this library is that the user
 has no control over what is written here (sometimes this library is not even
 accessible and is hidden as a binary); experts on the architecture build these
 libraries using in-depth knowledge about the device (BLAS is a good example of
-one of these libraries). The matmul kernel in `linalg.h` discusses different
+one of these libraries). The MatMul kernel in `linalg.h` discusses different
 optimizations one may perform for improved performance, however every
 optimizations requires in-depth knowledge of the target architecture.
 
 The benefit of this approach is that users do not need to be experts of the
-device they are programming on and can make use of high-performance architectures
+device they are programming on to achieve high-performance
 for their applications (like AI, HPC, etc.). This also allows for portability
 between different accelerators and generations of chips. The downside is that
 these high-performance libraries create a large barrier to entry for new chips
@@ -91,15 +91,16 @@ tile; but how much to tile is what changes.
 There are scheduling libraries that
 try to resolve this issue by separating the kernels from the optimizations;
 however, ideally the compiler should be leveraged to perform these optimizations
-since it knows this information about the architecture.
-The problem is that, in order to compile this code to an executable, the code
+since it knows a lot of information about the device architecture.
+The problem is that, using traditional compilation techniques, in order to compile
+this code to an executable, the code
 must be written as bare for loops and memory accesses which lowers the abstraction
 level too early for the compiler to do these optimizations.
 This is where MLIR comes in. MLIR is a compiler framework which allows for
 different levels of abstraction ("dialects") to be represented within its Intermediate
 Representation. This allows for compiler passes to be written which perform
 these high-level optimizations on kernels. These passes and dialects, if written
-well, can be reused by different compilers to achieve good performance on all
+well, can be reused by different compiler flows to achieve good performance on all
 devices (even hardware accelerators, which usually remain at very high levels of
 abstraction).
 
@@ -121,13 +122,13 @@ int main(void) {
 
 Often, custom tools are created which can convert code such as the code above
 into MLIR automatically. For this example, such a tool is trivial to write since
-I chose the API for the library to match the Tensor + Linalg level of abstraction
-in MLIR. Often times people do things the other way around, the build a level of
+I chose the API for the library to match the Linalg on Tensor level of abstraction
+in MLIR. Often times people do things the other way around: they build a level of
 abstraction in MLIR which matches their pre-existing APIs; however, for this
 tutorial, I wanted to use the core MLIR dialects.
 
-I chose to enter the Tensor + Linalg level of abstraction for this demo since
-this is a common abstraction used by the key users of MLIR (TensorFlow and
+I chose to enter the Linalg on Tensor level of abstraction for this demo since
+this is a common abstraction used by the key users of MLIR (such as TensorFlow and
 PyTorch). It is also a very interesting level of abstraction.
 
 I converted the code above into MLIR code by hand. This code can be found in
@@ -162,10 +163,10 @@ func.func @main() -> tensor<256x1024xf32> {
 
 MLIR provides a tool called `mlir-opt` which is used to test MLIR code. This
 tool runs passes on MLIR code (which will be described in the next demo) and
-verfies that the MLIR code is valid between passes. Since it runs validation so
+verifies that the MLIR code is valid between passes. Since it runs validation so
 often, this tool is often just used for testing / debugging; while custom tools
 based on this one are used when building a real compiler flow. For this part of
-the demo, I want to use this tool to ensure that the MLIR code I wrote by hand
+the demo I want to use this tool to ensure that the MLIR code I wrote by hand
 is valid. After following the steps in Demo 0, you should have `mlir-opt` already
 built in the `build/bin` folder. To use it, we perform the following command:
 ```sh
@@ -188,7 +189,7 @@ Our goal is to take the high-level code we wrote in Demo 2, and lower it to
 the level of abstraction closest to assembly language.
 
 The script `lower.sh` lowers the code from Demo 2 step-by-step from the high-level
-linalg representation all the way to LLVMIR. You can run this script by doing:
+Linalg on Tensor representation all the way to LLVMIR. You can run this script by doing:
 ```sh
 bash demo3-lowering-mlir/lower.sh
 ```
@@ -225,15 +226,15 @@ just a high-level description of an algorithm.
 
 The first thing we need to do is lower the Tensors into MemRefs. Tensors are
 abstract data types which only represent the data being created / used. We need
-this data to exist somewhere in memory in buffers. MLIR provides specialized
+this data to exist somewhere in memory as buffers. MLIR provides specialized
 passes to convert tensors into buffers for each of the dialects. A list of all
 these passes can be found [here](https://mlir.llvm.org/docs/Passes/#bufferization-passes).
-In this case, we want to use the `one-shot-bufferize` pass. This performs all
-the bufferization over all the dialects at once in "one-shot". If you do not need
+In this case, we want to use the `one-shot-bufferize` pass. This performs
+bufferization over all the dialects at once in "one-shot". If you do not need
 fine-grained control over how the buffers are created, this is a good pass to use.
 We will be using `mlir-opt` to run this pass. See the `lower.sh` script for how
 to use it. After performing bufferization, the code is lowered to a new level
-of abstraction called "Linalg on MemRef":
+of abstraction called "Linalg on MemRef" or "Linalg on Buffers":
 ```mlir
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module {
@@ -270,11 +271,12 @@ having to create a new Value. I should be clear that the MemRef values themselve
 are still SSA (for example `%alloc` is still an SSA value), but because we are
 working with pointers, it is challenging to perform data-flow analysis on the
 data contained within MemRefs. This demonstrates how moving from one level of
-abstraction to another leads to necessary losses in information.
+abstraction to another leads to necessary losses in information and challenges
+with optimization.
 
 Now that the Tensors have been lowered into buffers, and the linalg operations
 are working on these buffers, we can now lower these linalg ops to real algorithms.
-CPUs do not come with ops to compute the matmul over two buffers (normally), so
+CPUs do not come with ops to compute the MatMul over two buffers (normally), so
 we need to convert these ops into actual for-loops that can be executed. This
 will lower our abstraction level further from what is often called "graph-level"
 linalg operations to actual instructions. This will look similar to what one
@@ -327,7 +329,7 @@ module {
 Notice that the linalg operations have been converted to practically the same
 code we wrote in Demo 1 in C++! Another thing to notice is that we are now
 operating directly on the MemRef buffers, instead of naming high-level operations
-we want to perform. Thus, now we are directly loading from and storing to these
+we want to perform. Thus, we are now directly loading from and storing to these
 buffers. Due to all of this, the length of the kernel also increases. This is the
 consequence of lowering the abstraction level. Code gets less abstract and more
 detailed.
@@ -351,7 +353,7 @@ at the level of abstraction that is as close to CPUs as we can get in core MLIR.
 
 Now that we are at the CPU level of abstraction, we want to make use of LLVM to
 lower the rest of the way. This is very convenient since LLVM has been built over
-several years to convert CPU level code all the way down to assembly. We want to
+decades to convert CPU level code all the way down to assembly. We want to
 make use of this lowering! In order to emit LLVMIR, we need to convert all of
 our MLIR code to the LLVM dialect. This is done by converting each of the dialects we have
 in our kernel into the LLVM dialect. See the `lower.sh` script for which passes I chose to
@@ -436,8 +438,8 @@ easier. Now that we are in the affine dialect, we can make use of the optimizati
 provided by the dialect.
 
 The first optimizations I want to perform is loop fusion. You will notice that
-the original kernel separates out the zeroing of output buffer, computing the
-matmul, and performing the ReLU into different loop nests. We know that the
+the original kernel separates the zeroing of the output buffer, computing the
+MatMul, and performing the ReLU into different loop nests. We know that the
 memory accesses between these loops are independent, but without Affine Analysis
 the compiler struggles to realize this. Here, we use the `affine-loop-fusion`
 pass which produces the following code:
@@ -475,7 +477,7 @@ be fused and combined them all into 1! This has a massive affect on the performa
 of the kernel. Not only do we not have to iterate over 256x1024 elements three
 times, but notice that one of the buffers dissapeared! The ReLU function needed
 to allocate a 1MB buffer to store the result of the activation; however, using
-affine analysis, the compiler realized that this buffer was not necessary and
+Affine Analysis, the compiler realized that this buffer was not necessary and
 removed it. This greatly reduces the memory footprint of the kernel which will
 help with cache locality.
 
