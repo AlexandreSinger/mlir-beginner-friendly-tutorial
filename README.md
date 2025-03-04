@@ -161,6 +161,20 @@ func.func @main() -> tensor<256x1024xf32> {
 }
 ```
 
+Since tensors are immutable and SSA, this allows us to create a Data Flow Graph
+(DFG) of the above kernel:
+
+![Linalg on tensor Data Flow Graph](resources/LinalgOnTensorDFG.png)
+
+The MLIR infrastructure includes methods of traversing DFGs.
+A special property of this DFG is that it is directed and acyclic. This has major
+benefits for compiler optimizations. For example, we can notice that the result
+of the MatMul is fed directly into the ReLU; if our device had a special
+instruction that can perform MatMul + ReLU (for example, a specialized hardware
+accelerator), we can directly fuse these two Linalg ops together.
+This property of building a DFG at the data level is why this level of abstraction
+is sometimes called the "graph-level".
+
 MLIR provides a tool called `mlir-opt` which is used to test MLIR code. This
 tool runs passes on MLIR code (which will be described in the next demo) and
 verifies that the MLIR code is valid between passes. Since it runs validation so
