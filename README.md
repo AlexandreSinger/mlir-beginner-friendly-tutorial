@@ -5,6 +5,10 @@ MLIR, not a compiler engineer. This tutorial will introduce why MLIR exists and
 how it is used to compile code at different levels of abstraction. This tutorial
 will focus on working with the "core" dialects of MLIR.
 
+Part 1 of this tutorial was presented during the weekly Reading Group at the
+University of Toronto. The recording of this presentation can be found here:
+https://youtu.be/Uno_XhtkT5E
+
 # Demo 0: Building MLIR
 
 In this repository, you will find a Git submodule of LLVM. This was the most
