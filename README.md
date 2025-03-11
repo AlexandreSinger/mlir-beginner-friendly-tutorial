@@ -213,6 +213,18 @@ bash demo3-lowering-mlir/lower.sh
 ```
 We will now walk through what each step in this script is doing.
 
+When working with MLIR, it is often a good idea to create a flow diagram to
+show how different dialects are converted into one another. A great example of
+one of these diagrams can be found
+[here](https://mlir.llvm.org/docs/Dialects/Vector/#positioning-in-the-codegen-infrastructure).
+I created a flow diagram for the lowering I perform in the script:
+
+![Dialect Lowering Flow Diagram](resources/LoweringDialectDiagram.png)
+
+This diagram shows where I consider each level of abstraction to be, with the
+dashed lines representing a conversion pass we are doing to go from one level
+of abstraction to another.
+
 The MLIR code from Demo 2 is at a level of abstraction called "Linalg on Tensor",
 which is shown in the following code:
 ```mlir
@@ -449,7 +461,9 @@ MemRef load/store into the Affine dialect.
 
 The script `optimize.sh` walks through how to enter into the affine dialect from
 our Demo 2 code, perform loop fusion and tiling, and then lower into the scf
-dialect.
+dialect. A flow diagram for the lowering is shown below:
+
+![Lowering to Affine Dialect Lowering Diagram](resources/AffineLoweringDialectDiagram.png)
 
 We can convert the linalg dialect into the affine dialect using the
 `convert-linalg-to-affine-loops` pass after performing bufferization. This
