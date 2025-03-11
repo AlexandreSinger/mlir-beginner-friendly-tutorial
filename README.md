@@ -399,11 +399,53 @@ accesses buffers. By using these analytical models, we can deduce the memory
 access patterns of buffers which allow us to do exciting optimization like
 fusing complicated loops together and tiling loops to improve cache locality.
 
+The image below demonstrates how Affine Analysis is used in compilers to optimize
+memory access patterns. Affine Analysis allows us to create a polyhedron in
+memory space that represents a memory access pattern. This first example shows
+a simple memory access pattern which will set the first 16x32 elements in 2D
+array (32x32) to 1. Affine Analysis will tell us that the memory access pattern
+is a 16x32 rectangle starting at (0, 0), shown in blue.
+This may seem very simple and obvious, but this can get more complicated.
+Similarly, red and green rectangles are shown for two other access patterns.
+Where things get more interesting is when we combine these three loop nests into
+one kernel. You will notice in this kernel that we are doing extra work, since
+future writes may overlap with previous writes we made to memory! Affine Analysis
+allows us to recognize when these extra writes happen by simply computing the
+overlap of these rectangles! By recognizing when the blue rectangle is overlapped
+with the red / green rectangle, we can change the bound of j to 16 instead of
+32. Similarly, we can change the bound of the red rectangle's i to 16 to prevent
+writing to locations in memory we know the green rectangle will overlap.
+
+![Affine Analysis Introduction](resources/AffineAnalysisIntro.png)
+
+This was a simple example, but we can do much more interesting compiler optimizations
+with this information. For example, if we compute the area of these polyhedrons
+we will know exactly the number of elements that are accessed by the kernel!
+We can use this information to compute the memory footprint of the loops in
+the kernel.
+We can then transform the loops in the kernel to minimize the
+footprint within certain loop iterations.
+
+Affine Analysis is very powerful, but it does have limitations. For loops, the
+lower bound and upper bound of the loops must be Affine functions (meaning they
+are linear combinations of variables) and the step size must be a fixed number.
+For loads and stores, the address must be computed using an Affine function.
+For example, `A[2*i][j + 32]` is affine; however, `A[0][i*j]` is not.
+There are similar limitations for if statements.
+
 Affine Analysis is provided as part of the affine dialect in MLIR. This is a
 level of abstraction that exists below the linalg dialect, but above the loops
-dialect. What we can do is as we are lowering from the Linalg dialect to the scf
+dialect.
+The Affine Dialect guarantees that all of the loops, loads, and stores are
+affine (observe the limitations of Affine Analysis). For example, A loop which
+is not affine cannot be expressed in the Affine Dialect's IR.
+What we can do is as we are lowering from the Linalg dialect to the scf
 dialect, we can make a pit-stop into the affine dialect, perform optimizations,
-and the continue into the scf dialect.
+and the continue into the scf dialect. This is a classic approach to lowering
+in MLIR since it is pretty obvious how to turn linalg operations into Affine
+loops, loads, and stores; and easy to turn any Affine instruction into
+the SCF or MemRef dialects; but it can be tricky to raise any general SCF loop /
+MemRef load/store into the Affine dialect.
 
 The script `optimize.sh` walks through how to enter into the affine dialect from
 our Demo 2 code, perform loop fusion and tiling, and then lower into the scf
