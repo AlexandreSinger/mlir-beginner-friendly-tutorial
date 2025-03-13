@@ -9,6 +9,10 @@ Part 1 of this tutorial was presented during the weekly Reading Group at the
 University of Toronto. The recording of this presentation can be found here:
 https://youtu.be/Uno_XhtkT5E
 
+Part 2 of this tutorial was presented during the next week's Reading Group at the
+University of Toronto. The recording of this presentation can be found here:
+https://youtu.be/l0O4Vbc3l5c
+
 # Demo 0: Building MLIR
 
 In this repository, you will find a Git submodule of LLVM. This was the most
